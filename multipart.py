@@ -177,6 +177,7 @@ class MultipartParser(object):
         mem_limit=2 ** 20,
         memfile_limit=2 ** 18,
         buffer_size=2 ** 16,
+        stream_parts=False,
         charset="latin1",
     ):
         """ Parse a multipart/form-data byte stream. This object is an iterator
@@ -193,6 +194,7 @@ class MultipartParser(object):
         self.memfile_limit = memfile_limit
         self.mem_limit = min(mem_limit, self.disk_limit)
         self.buffer_size = min(buffer_size, self.mem_limit)
+        self.stream_parts = stream_parts
         self.charset = charset
 
         if self.buffer_size - 6 < len(boundary):  # "--boundary--\r\n"
@@ -277,7 +279,7 @@ class MultipartParser(object):
         terminator = b"--" + to_bytes(self.boundary) + b"--"
 
         # Consume first boundary. Ignore leading blank lines
-        for line, nl in lines:
+        for line, new_line in lines:
             if line:
                 break
 
@@ -296,7 +298,7 @@ class MultipartParser(object):
 
         part = MultipartPart(**opts)
 
-        for line, nl in lines:
+        for line, new_line in lines:
             if line == terminator and not is_tail:
                 part.file.seek(0)
                 yield part
@@ -314,8 +316,8 @@ class MultipartParser(object):
                 part = MultipartPart(**opts)
 
             else:
-                is_tail = not nl  # The next line continues this one
-                part.feed(line, nl)
+                is_tail = not new_line  # The next line continues this one
+                part.feed(line, new_line)
 
                 if part.is_buffered():
                     if part.size + mem_used > self.mem_limit:
@@ -328,7 +330,7 @@ class MultipartParser(object):
 
 
 class MultipartPart(object):
-    def __init__(self, buffer_size=2 ** 16, memfile_limit=2 ** 18, charset="latin1"):
+    def __init__(self, buffer_size=2 ** 16, memfile_limit=2 ** 18, stream_data=False, charset="latin1"):
         self.headerlist = []
         self.headers = None
         self.file = False
@@ -341,17 +343,18 @@ class MultipartPart(object):
         self.charset = charset
         self.memfile_limit = memfile_limit
         self.buffer_size = buffer_size
+        self.stream_data = stream_data
 
-    def feed(self, line, nl=""):
+    def feed(self, line, new_line=""):
         if self.file:
-            return self.write_body(line, nl)
+            return self.write_body(line, new_line)
 
-        return self.write_header(line, nl)
+        return self.write_header(line, new_line)
 
-    def write_header(self, line, nl):
+    def write_header(self, line, new_line):
         line = line.decode(self.charset)
 
-        if not nl:
+        if not new_line:
             raise MultipartError("Unexpected end of line in header.")
 
         if not line.strip():  # blank line -> end of header segment
@@ -366,13 +369,13 @@ class MultipartPart(object):
             name, value = line.split(":", 1)
             self.headerlist.append((name.strip(), value.strip()))
 
-    def write_body(self, line, nl):
-        if not line and not nl:
+    def write_body(self, line, new_line):
+        if not line and not new_line:
             return  # This does not even flush the buffer
 
         self.size += len(line) + len(self._buf)
         self.file.write(self._buf + line)
-        self._buf = nl
+        self._buf = new_line
 
         if self.content_length > 0 and self.size > self.content_length:
             raise MultipartError("Size of body exceeds Content-Length header.")
