@@ -8,21 +8,33 @@ from a file, a socket or a WSGI environment. The parser can be used to replace
 cgi.FieldStorage (without the bugs) and works with Python 2.5+ and 3.x (2to3).
 """
 
+# TODO test partial beginning seperator works correctly.
 
-__author__ = "Marcel Hellkamp"
+
+__author__ = "Marcel Hellkamp, Mark Jameson"
 __version__ = "0.2"
 __license__ = "MIT"
-__all__ = ["MultipartError", "MultipartParser", "MultipartPart", "parse_form_data"]
+__all__ = [
+    "MultipartError",
+    "MultipartParser",
+    "Part",
+    "PartData",
+    "Events",
+    "parse_form_data",
+]
 
 
 import re
 import sys
-from io import BytesIO
-from tempfile import TemporaryFile
+from itertools import chain
+from enum import Enum, auto
+from dataclasses import dataclass
+from collections import deque
+from collections import MutableMapping as DictMixin
 from urllib.parse import parse_qs
 from wsgiref.headers import Headers
-from collections import MutableMapping as DictMixin
 
+from typing import Union, Generator, List, Tuple
 
 ##############################################################################
 ################################ Helper & Misc ###############################
@@ -89,26 +101,11 @@ class MultiDict(DictMixin):
                 yield key, value
 
 
-def to_bytes(data, enc="utf8"):
+def to_bytes(data, encoding="utf8"):
     if isinstance(data, str):
-        data = data.encode(enc)
+        data = data.encode(encoding)
 
     return data
-
-
-def copy_file(stream, target, maxread=-1, buffer_size=2 * 16):
-    """ Read from :stream and write to :target until :maxread or EOF. """
-    size, read = 0, stream.read
-
-    while True:
-        to_read = buffer_size if maxread < 0 else min(buffer_size, maxread - size)
-        part = read(to_read)
-
-        if not part:
-            return size
-
-        target.write(part)
-        size += len(part)
 
 
 # -------------
@@ -117,10 +114,10 @@ def copy_file(stream, target, maxread=-1, buffer_size=2 * 16):
 
 
 _special = re.escape('()<>@,;:"\\/[]?={} \t')
-_re_special = re.compile(r'[%s]' % _special)
+_re_special = re.compile(r"[%s]" % _special)
 _quoted_string = r'"(?:\\.|[^"])*"'  # Quoted string
-_value = r'(?:[^%s]+|%s)' % (_special, _quoted_string)  # Save or quoted string
-_option = r'(?:;|^)\s*([^%s]+)\s*=\s*(%s)' % (_special, _value)
+_value = r"(?:[^%s]+|%s)" % (_special, _quoted_string)  # Save or quoted string
+_option = r"(?:;|^)\s*([^%s]+)\s*=\s*(%s)" % (_special, _value)
 _re_option = re.compile(_option)  # key=value part of an Content-Type like header
 
 
@@ -167,304 +164,344 @@ class MultipartError(ValueError):
     pass
 
 
-class MultipartParser(object):
-    def __init__(
-        self,
-        stream,
-        boundary,
-        content_length=-1,
-        disk_limit=2 ** 30,
-        mem_limit=2 ** 20,
-        memfile_limit=2 ** 18,
-        buffer_size=2 ** 16,
-        stream_parts=False,
-        charset="latin1",
-    ):
-        """ Parse a multipart/form-data byte stream. This object is an iterator
-            over the parts of the message.
-
-            :param stream: A file-like stream. Must implement ``.read(size)``.
-            :param boundary: The multipart boundary as a byte string.
-            :param content_length: The maximum number of bytes to read.
-        """
-        self.stream = stream
-        self.boundary = boundary
-        self.content_length = content_length
-        self.disk_limit = disk_limit
-        self.memfile_limit = memfile_limit
-        self.mem_limit = min(mem_limit, self.disk_limit)
-        self.buffer_size = min(buffer_size, self.mem_limit)
-        self.stream_parts = stream_parts
-        self.charset = charset
-
-        if self.buffer_size - 6 < len(boundary):  # "--boundary--\r\n"
-            raise MultipartError("Boundary does not fit into buffer_size.")
-
-        self._done = []
-        self._part_iter = None
-
-    def __iter__(self):
-        """ Iterate over the parts of the multipart message. """
-        if not self._part_iter:
-            self._part_iter = self._iterparse()
-
-        for part in self._done:
-            assign_data_type(part)
-            yield part
-
-        for part in self._part_iter:
-            self._done.append(part)
-            assign_data_type(part)
-            yield part
-
-    def parts(self):
-        """ Returns a list with all parts of the multipart message. """
-        return list(self)
-
-    def get(self, name, default=None):
-        """ Return the first part with that name or a default value (None). """
-        for part in self:
-            if name == part.name:
-                return part
-
-        return default
-
-    def get_all(self, name):
-        """ Return a list of parts with that name. """
-        return [p for p in self if p.name == name]
-
-    def _lineiter(self):
-        """ Iterate over a binary file-like object line by line. Each line is
-            returned as a (line, line_ending) tuple. If the line does not fit
-            into self.buffer_size, line_ending is empty and the rest of the line
-            is returned with the next iteration.
-        """
-        read = self.stream.read
-        maxread, maxbuf = self.content_length, self.buffer_size
-        buffer = b""  # buffer for the last (partial) line
-
-        while True:
-            data = read(maxbuf if maxread < 0 else min(maxbuf, maxread))
-            maxread -= len(data)
-            lines = (buffer + data).splitlines(True)
-            len_first_line = len(lines[0])
-
-            # be sure that the first line does not become too big
-            if len_first_line > self.buffer_size:
-                # at the same time don't split a '\r\n' accidentally
-                if len_first_line == self.buffer_size + 1 and lines[0].endswith(b"\r\n"):
-                    splitpos = self.buffer_size - 1
-                else:
-                    splitpos = self.buffer_size
-                lines[:1] = [lines[0][:splitpos], lines[0][splitpos:]]
-
-            if data:
-                buffer = lines[-1]
-                lines = lines[:-1]
-
-            for line in lines:
-                if line.endswith(b"\r\n"):
-                    yield line[:-2], b"\r\n"
-                elif line.endswith(b"\n"):
-                    yield line[:-1], b"\n"
-                elif line.endswith(b"\r"):
-                    yield line[:-1], b"\r"
-                else:
-                    yield line, b""
-
-            if not data:
-                break
-
-    def _iterparse(self):
-        lines, line = self._lineiter(), ""
-        separator = b"--" + to_bytes(self.boundary)
-        terminator = b"--" + to_bytes(self.boundary) + b"--"
-
-        # Consume first boundary. Ignore leading blank lines
-        for line, new_line in lines:
-            if line:
-                break
-
-        if line != separator:
-            raise MultipartError("Stream does not start with boundary")
-
-        # For each part in stream...
-        mem_used, disk_used = 0, 0  # Track used resources to prevent DoS
-        is_tail = False  # True if the last line was incomplete (cutted)
-
-        opts = {
-            "buffer_size": self.buffer_size,
-            "memfile_limit": self.memfile_limit,
-            "charset": self.charset,
-        }
-
-        part = MultipartPart(**opts)
-
-        for line, new_line in lines:
-            if line == terminator and not is_tail:
-                part.data.seek(0)
-
-                assign_data_type(part)
-                yield part
-                break
-
-            elif line == separator and not is_tail:
-                if part.is_buffered():
-                    mem_used += part.size
-                else:
-                    disk_used += part.size
-                part.data.seek(0)
-
-                assign_data_type(part)
-                yield part
-
-                part = MultipartPart(**opts)
-
-            else:
-                is_tail = not new_line  # The next line continues this one
-                part.feed(line, new_line)
-
-                if part.is_buffered():
-                    if part.size + mem_used > self.mem_limit:
-                        raise MultipartError("Memory limit reached.")
-                elif part.size + disk_used > self.disk_limit:
-                    raise MultipartError("Disk limit reached.")
-
-        if line != terminator:
-            raise MultipartError("Unexpected end of multipart stream.")
+class Events(Enum):
+    NEED_DATA = auto()
+    FINISHED = auto()
 
 
-class MultipartPart(object):
-    def __init__(self, buffer_size=2 ** 16, memfile_limit=2 ** 18, stream_data=False, charset="latin1"):
+class States(Enum):
+    BUILDING_HEADERS = auto()
+    BUILDING_HEADERS_NEED_DATA = auto()
+    BUILDING_BODY = auto()
+    BUILDING_BODY_NEED_DATA = auto()
+    FINISHED = auto()
+
+
+@dataclass
+class PartData:
+    raw: bytearray
+    length: int
+
+
+class Part:
+    def __init__(self, charset="latin1"):
         self.headerlist = []
         self.headers = None
         self.data = None
         self.file = False
         self.form_data = False
         self.size = 0
-        self._buf = b""
         self.disposition = None
         self.name = None
         self.filename = None
         self.content_type = None
         self.charset = charset
-        self.memfile_limit = memfile_limit
-        self.buffer_size = buffer_size
-        self.stream_data = stream_data
 
-<<<<<<< HEAD
-    def feed(self, line, new_line=""):
-        if self.file:
-            return self.write_body(line, new_line)
-=======
-    def feed(self, line, nl=""):
-        if self.data:
-            return self.write_body(line, nl)
->>>>>>> master
+    def is_buffered(self) -> bool:
+        """ Return true if the data is fully buffered in memory."""
+        return isinstance(self.data, BytesIO)
 
-        return self.write_header(line, new_line)
+    @property
+    def value(self) -> str:
+        """ Data decoded with the specified charset """
+        return self.raw.decode(self.charset)
 
-    def write_header(self, line, new_line):
+    @property
+    def raw(self) -> bytearray:
+        """ Data without decoding """
+        return self.data
+
+
+class MultipartParser:
+    def __init__(self, boundary, content_length=None, charset="latin1"):
+        """
+        Parse a multipart/form-data byte stream. This object is an iterator
+        over the parts of the message.
+        """
+        self.boundary = boundary
+        self.separator = b"--" + to_bytes(self.boundary)
+        self.terminator = b"--" + to_bytes(self.boundary) + b"--"
+
+        self.separator_len = len(self.separator)
+
+        self.charset = charset
+
+        self.state = States.BUILDING_HEADERS
+        self.events_queue = deque()
+
+        self.buffer = bytearray()
+        self.last_partial_line = None
+
+        # TODO implement total body size
+        self.expected_body_size = content_length
+        self.current_body_size = 0
+        self.expected_part_size = None
+        self.current_part_size = 0
+
+    def parts(self) -> List[Union[Part, PartData, Events]]:
+        return list(self)
+
+    def recv(self, chunk) -> None:
+        """
+        Queue any events parsing chunk may create.
+        """
+        self._queue_events(chunk)
+
+    def parse(self, chunk) -> List[Union[Part, PartData, Events]]:
+        """Queue events for the chunk, and return them as a list."""
+        self._queue_events(chunk)
+        return self.parts()
+
+    def next_event(self) -> Union[Part, PartData, Events]:
+        """
+        Return the next event from the queue.
+        If there is no event, request data, unless parsing is complete.
+        """
+        try:
+            return self.events_queue.popleft()
+        except IndexError:
+            if self.state is not States.FINISHED:
+                return Events.NEED_DATA
+            else:
+                return Events.FINISHED
+
+    def __iter__(self) -> Generator[Union[Part, PartData, Events], None, None]:
+        """
+        Yield all events in the queue.
+        """
+        while True:
+            try:
+                event = self.events_queue.popleft()
+            except IndexError:
+                break
+            else:
+                yield event
+
+    def _queue_events(self, chunk) -> None:
+        """
+        Send the given chunk through the parser based on the current  parser
+        state, and add any events that result to the events queue.
+        """
+        # Prepend the current buffer if there is any and clear the buffer.
+        # Carries partial chunks from one chunk parsing to the next.
+        if self.buffer:
+            chunk = self.buffer + chunk
+            self.buffer = bytearray()
+        chunk = iter(chunk.splitlines(True))
+
+        while True:
+            # Prepend the buffer between state changes, to carry
+            # separators and terminations between parsing routes.
+            if self.buffer:
+                split_buffer = iter(self.buffer.splitlines(True))
+                chunk = chain(split_buffer, chunk)
+                self.buffer = bytearray()
+
+            # Depending on the parser's current state, attempt to
+            # either build and queue a Part / PartData object, or
+            # queue actionable events.
+            if self.state is States.BUILDING_HEADERS:
+                maybe_part = self._build_part(chunk)
+                if maybe_part:
+                    self.events_queue.append(maybe_part)
+
+            elif self.state is States.BUILDING_BODY:
+                maybe_part_data = self._build_part_data(chunk)
+                if maybe_part_data:
+                    self.events_queue.append(maybe_part_data)
+
+            # queue events based on parser state post parse attempt
+            if self.state is States.BUILDING_HEADERS_NEED_DATA:
+                self.events_queue.append(Events.NEED_DATA)
+                self.state = States.BUILDING_HEADERS
+                break
+
+            elif self.state is States.BUILDING_BODY_NEED_DATA:
+                self.events_queue.append(Events.NEED_DATA)
+                self.state = States.BUILDING_BODY
+                break
+
+            elif self.state is States.FINISHED:
+                self.events_queue.append(Events.FINISHED)
+                break
+
+    def _build_part(self, chunk_lines) -> Union[Part, None]:
+        """
+        Try to construct and return a Part object, given sufficient
+        data in the chunk. If too little data is given, the given data
+        will be buffered, and a fresh attempt to create the Part will
+        be made upon future request.
+        """
+        lines = self._separate_newlines(chunk_lines)
+
+        # Consume first boundary. Ignore leading blank lines
+        maybe_seperator, first_newline = next(
+            ((l, nl) for l, nl in lines if l), (b"", b"")
+        )
+
+        if not first_newline:
+            # We have not recieved a full line of headers.
+            self._buffer_chunk([(maybe_seperator, first_newline)])
+            self.state = States.BUILDING_HEADERS_NEED_DATA
+            return
+
+        if maybe_seperator != self.separator:
+            raise MultipartError("Part does not start with boundary")
+        else:
+            # Buffer the beginning of the part in case we need to reattempt
+            # creation later (incomplete data).
+            self._buffer_chunk([(maybe_seperator, first_newline)])
+
+        part = Part(charset=self.charset)
+
+        for line, newline in lines:
+            self.construct_part(part, line, newline)
+
+            if self.state is States.BUILDING_HEADERS_NEED_DATA:
+                self._buffer_chunk([(line, newline)])
+                self._buffer_chunk(lines)
+                break
+
+            elif self.state is States.BUILDING_BODY:
+                self.buffer = bytearray()
+                self._buffer_chunk(lines)
+                return part
+                break
+        else:
+            # We have iterated the given data to completion, but have not
+            # recieved enough data to build the Part.
+            self.state = States.BUILDING_HEADERS_NEED_DATA
+
+    def construct_part(self, part, line, newline) -> None:
+        """
+        Add headers to the Part as they are parsed.
+        """
         line = line.decode(self.charset)
 
-        if not new_line:
-            raise MultipartError("Unexpected end of line in header.")
+        if not newline:
+            self.state = States.BUILDING_HEADERS_NEED_DATA
+            return
 
-        if not line.strip():  # blank line -> end of header segment
-            self.finish_header()
-        elif line[0] in " \t" and self.headerlist:
-            name, value = self.headerlist.pop()
-            self.headerlist.append((name, value + line.strip()))
+        if not line.strip():
+            # blank line -> end of header segment
+            part.headers = Headers(part.headerlist)
+            content_disposition = part.headers.get("Content-Disposition", "")
+            content_type = part.headers.get("Content-Type", "")
+
+            if not content_disposition:
+                raise MultipartError("Content-Disposition header is missing.")
+
+            part.disposition, part.options = parse_options_header(content_disposition)
+            part.name = part.options.get("name")
+            part.filename = part.options.get("filename")
+            part.content_type, options = parse_options_header(content_type)
+            part.charset = options.get("charset") or part.charset
+
+            content_length = part.headers.get("Content-Length")
+            if content_length is not None:
+                self.expected_part_size = int(content_length)
+
+            self.state = States.BUILDING_BODY
+            return
+
+        elif line[0] in " \t" and part.headerlist:
+            name, value = part.headerlist.pop()
+            part.headerlist.append((name, value + line.strip()))
+
         else:
             if ":" not in line:
                 raise MultipartError("Syntax error in header: No colon.")
 
             name, value = line.split(":", 1)
-            self.headerlist.append((name.strip(), value.strip()))
+            part.headerlist.append((name.strip(), value.strip()))
 
-    def write_body(self, line, new_line):
-        if not line and not new_line:
-            return  # This does not even flush the buffer
+    def _build_part_data(self, chunk_lines) -> Union[PartData, None]:
+        """
+        Parse through the chunk, creating and returning PartData objects when possible.
+        """
+        part_data_buffer = bytearray()
 
-        self.size += len(line) + len(self._buf)
-<<<<<<< HEAD
-        self.file.write(self._buf + line)
-        self._buf = new_line
-=======
-        self.data.write(self._buf + line)
-        self._buf = nl
->>>>>>> master
+        lines = self._separate_newlines(chunk_lines)
 
-        if self.content_length > 0 and self.size > self.content_length:
-            raise MultipartError("Size of body exceeds Content-Length header.")
+        previous_newline = b""
 
-        if self.size > self.memfile_limit and isinstance(self.data, BytesIO):
-            # TODO: What about non-file uploads that exceed the memfile_limit?
-            self.data, old = TemporaryFile(mode="w+b"), self.data
-            old.seek(0)
-            copy_file(old, self.data, self.size, self.buffer_size)
+        for line, newline in lines:
 
-    def finish_header(self):
-        self.data = BytesIO()
-        self.headers = Headers(self.headerlist)
-        content_disposition = self.headers.get("Content-Disposition", "")
-        content_type = self.headers.get("Content-Type", "")
+            if self.expected_part_size is not None:
+                self.current_part_size += len(line)
+                if self.current_part_size > self.expected_part_size:
+                    raise MultipartError("Size of body exceeds Content-Length header.")
 
-        if not content_disposition:
-            raise MultipartError("Content-Disposition header is missing.")
+            # Handle the case where our last chunk of data ended
+            # ambigiously.
+            if self.last_partial_line is not None:
+                line = self.last_partial_line + line
+                self.last_partial_line = None
 
-        self.disposition, self.options = parse_options_header(content_disposition)
-        self.name = self.options.get("name")
-        self.filename = self.options.get("filename")
-        self.content_type, options = parse_options_header(content_type)
-        self.charset = options.get("charset") or self.charset
-        self.content_length = int(self.headers.get("Content-Length", "-1"))
+            if line == self.terminator:
+                self.state = States.FINISHED
+                self.current_part_size = 0
+                self.expected_part_size = None
+                break
 
-    def is_buffered(self):
-        """ Return true if the data is fully buffered in memory."""
-        return isinstance(self.data, BytesIO)
+            elif line == self.separator:
+                self._buffer_chunk(lines)
+                self.state = States.BUILDING_HEADERS
+                self.current_part_size = 0
+                self.expected_part_size = None
+                break
+            else:
+                if not newline:
+                    # It is impossible to tell the difference between
+                    # body data + CRLF + the beginning of the next seperator or
+                    # terminator, and random body data. For example, with a terminator
+                    # of "--terminator", we can't make a hard decision when our body chunk
+                    # is "somedata\r\n--term". We need to hold off on taking any specific
+                    # action, instead requesting more data.
+                    if len(line) < self.separator_len:
+                        self.last_partial_line = line
+                        self.state = States.BUILDING_BODY_NEED_DATA
+                else:
+                    part_data_buffer += previous_newline + line
+                    previous_newline = newline
 
-    @property
-    def value(self):
-        """ Data decoded with the specified charset """
+        if part_data_buffer:
+            self.state = States.BUILDING_BODY_NEED_DATA
+            return PartData(raw=part_data_buffer, length=len(part_data_buffer))
 
-        return self.raw.decode(self.charset)
+    def _separate_newlines(self, lines) -> Generator[Tuple[bytes, bytes], None, None]:
+        """
+        Iterate over a binary file-like object line by line. Each line is
+        returned as a (line, line_ending) tuple.
+        """
+        for line in lines:
+            if line.endswith(b"\r\n"):
+                yield line[:-2], b"\r\n"
+            elif line.endswith(b"\n"):
+                yield line[:-1], b"\n"
+            elif line.endswith(b"\r"):
+                yield line[:-1], b"\r"
+            else:
+                yield line or b"", b""
 
-    @property
-    def raw(self):
-        """ Data without decoding """
-        pos = self.data.tell()
-        self.data.seek(0)
-
-        try:
-            val = self.data.read()
-        except IOError:
-            raise
-        finally:
-            self.data.seek(pos)
-
-        return val
-
-    def save_as(self, path):
-        fp = open(path, "wb")
-        pos = self.data.tell()
-
-        try:
-            self.data.seek(0)
-            size = copy_file(self.data, fp)
-        finally:
-            self.data.seek(pos)
-
-        return size
+    def _buffer_chunk(self, chunk_lines) -> None:
+        """
+        Take an iterator like Iterable[Tuple[bytes, bytes]] and store them.
+        For convenience's sake, we join everything back up as a singular byte string
+        for reparsing later.
+        """
+        self.buffer += b"".join((l + nl) for l, nl in chunk_lines)
 
 
 # utils
 
-def assign_data_type(part: MultipartPart) -> None:
+# TODO add data type assignments to parts
+def assign_data_type(part: Part) -> None:
     if part.filename is not None:
         part.file = True
     else:
         part.form_data = True
+
 
 ##############################################################################
 #################################### WSGI ####################################
@@ -476,7 +513,7 @@ def parse_form_data(environ, charset="utf8", strict=False, **kwargs):
         Both tuple values are dictionaries with the form-field name as a key
         (unicode) and lists as values (multiple values per key are possible).
         The forms-dictionary contains form-field values as unicode strings.
-        The files-dictionary contains :class:`MultipartPart` instances, either
+        The files-dictionary contains :class:`Part` instances, either
         because the form-field was a file-upload or the value is too big to fit
         into memory limits.
 
