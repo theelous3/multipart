@@ -346,11 +346,11 @@ class MultipartParser:
             return
 
         if maybe_seperator != self.separator:
-            raise MultipartError("Part does not start with boundary")
-        else:
-            # Buffer the beginning of the part in case we need to reattempt
-            # creation later (incomplete data).
-            self._buffer_chunk([(maybe_seperator, first_newline)])
+            if len(maybe_seperator) >= self.separator_len:
+                raise MultipartError("Part does not start with boundary")
+        # Buffer the beginning of the part in case we need to reattempt
+        # creation later (incomplete data).
+        self._buffer_chunk([(maybe_seperator, first_newline)])
 
         part = Part(charset=self.charset)
 
