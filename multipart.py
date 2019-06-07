@@ -8,9 +8,6 @@ from a file, a socket or a WSGI environment. The parser can be used to replace
 cgi.FieldStorage (without the bugs) and works with Python 2.5+ and 3.x (2to3).
 """
 
-# TODO test partial beginning seperator works correctly.
-
-
 __author__ = "Marcel Hellkamp, Mark Jameson"
 __version__ = "0.2"
 __license__ = "MIT"
@@ -175,6 +172,7 @@ class States(Enum):
     BUILDING_BODY = auto()
     BUILDING_BODY_NEED_DATA = auto()
     FINISHED = auto()
+    ERROR = auto()
 
 
 @dataclass
@@ -232,9 +230,8 @@ class MultipartParser:
         self.buffer = bytearray()
         self.last_partial_line = None
 
-        # TODO implement total body size
-        self.expected_body_size = content_length
-        self.current_body_size = 0
+        self.current_part = None
+
         self.expected_part_size = None
         self.current_part_size = 0
 
@@ -284,48 +281,55 @@ class MultipartParser:
         """
         # Prepend the current buffer if there is any and clear the buffer.
         # Carries partial chunks from one chunk parsing to the next.
+        if self.state is States.ERROR:
+            raise RuntimeError("Cannot use parser in ERROR state.")
+
         if self.buffer:
             chunk = self.buffer + chunk
             self.buffer = bytearray()
         chunk = iter(chunk.splitlines(True))
 
         while True:
-            # Prepend the buffer between state changes, to carry
-            # separators and terminations between parsing routes.
-            if self.buffer:
-                split_buffer = iter(self.buffer.splitlines(True))
-                chunk = chain(split_buffer, chunk)
-                self.buffer = bytearray()
+            try:
+                # Prepend the buffer between state changes, to carry
+                # separators and terminations between parsing routes.
+                if self.buffer:
+                    split_buffer = iter(self.buffer.splitlines(True))
+                    chunk = chain(split_buffer, chunk)
+                    self.buffer = bytearray()
 
-            # Depending on the parser's current state, attempt to
-            # either build and queue a Part / PartData object, or
-            # queue actionable events.
-            if self.state is States.BUILDING_HEADERS:
-                maybe_part = self._build_part(chunk)
-                if maybe_part:
-                    self.events_queue.append(maybe_part)
+                # Depending on the parser's current state, attempt to
+                # either build and queue a Part / PartData object, or
+                # queue actionable events.
+                if self.state is States.BUILDING_HEADERS:
+                    maybe_part = self._parse_part(chunk)
+                    if maybe_part:
+                        self.events_queue.append(maybe_part)
 
-            elif self.state is States.BUILDING_BODY:
-                maybe_part_data = self._build_part_data(chunk)
-                if maybe_part_data:
-                    self.events_queue.append(maybe_part_data)
+                elif self.state is States.BUILDING_BODY:
+                    maybe_part_data = self._build_part_data(chunk)
+                    if maybe_part_data:
+                        self.events_queue.append(maybe_part_data)
 
-            # queue events based on parser state post parse attempt
-            if self.state is States.BUILDING_HEADERS_NEED_DATA:
-                self.events_queue.append(Events.NEED_DATA)
-                self.state = States.BUILDING_HEADERS
-                break
+                # queue events based on parser state post parse attempt
+                if self.state is States.BUILDING_HEADERS_NEED_DATA:
+                    self.events_queue.append(Events.NEED_DATA)
+                    self.state = States.BUILDING_HEADERS
+                    break
 
-            elif self.state is States.BUILDING_BODY_NEED_DATA:
-                self.events_queue.append(Events.NEED_DATA)
-                self.state = States.BUILDING_BODY
-                break
+                elif self.state is States.BUILDING_BODY_NEED_DATA:
+                    self.events_queue.append(Events.NEED_DATA)
+                    self.state = States.BUILDING_BODY
+                    break
 
-            elif self.state is States.FINISHED:
-                self.events_queue.append(Events.FINISHED)
-                break
+                elif self.state is States.FINISHED:
+                    self.events_queue.append(Events.FINISHED)
+                    break
+            except Exception:
+                self.state = States.ERROR
+                raise
 
-    def _build_part(self, chunk_lines) -> Union[Part, None]:
+    def _parse_part(self, chunk_lines) -> Union[Part, None]:
         """
         Try to construct and return a Part object, given sufficient
         data in the chunk. If too little data is given, the given data
@@ -348,14 +352,18 @@ class MultipartParser:
         if maybe_seperator != self.separator:
             if len(maybe_seperator) >= self.separator_len:
                 raise MultipartError("Part does not start with boundary")
+
         # Buffer the beginning of the part in case we need to reattempt
         # creation later (incomplete data).
         self._buffer_chunk([(maybe_seperator, first_newline)])
 
-        part = Part(charset=self.charset)
+        self.current_part = self.current_part or Part(charset=self.charset)
+        # alias the part so we can return it later and not wipe it
+        # with state change
+        part = self.current_part
 
         for line, newline in lines:
-            self.construct_part(part, line, newline)
+            self._construct_part(part, line, newline)
 
             if self.state is States.BUILDING_HEADERS_NEED_DATA:
                 self._buffer_chunk([(line, newline)])
@@ -372,7 +380,7 @@ class MultipartParser:
             # recieved enough data to build the Part.
             self.state = States.BUILDING_HEADERS_NEED_DATA
 
-    def construct_part(self, part, line, newline) -> None:
+    def _construct_part(self, part, line, newline) -> None:
         """
         Add headers to the Part as they are parsed.
         """
@@ -401,19 +409,15 @@ class MultipartParser:
             if content_length is not None:
                 self.expected_part_size = int(content_length)
 
+            self.current_part = None
             self.state = States.BUILDING_BODY
             return
 
-        elif line[0] in " \t" and part.headerlist:
-            name, value = part.headerlist.pop()
-            part.headerlist.append((name, value + line.strip()))
+        if ":" not in line:
+            raise MultipartError("Syntax error in header: No colon.")
 
-        else:
-            if ":" not in line:
-                raise MultipartError("Syntax error in header: No colon.")
-
-            name, value = line.split(":", 1)
-            part.headerlist.append((name.strip(), value.strip()))
+        name, value = line.split(":", 1)
+        part.headerlist.append((name.strip(), value.strip()))
 
     def _build_part_data(self, chunk_lines) -> Union[PartData, None]:
         """
@@ -426,11 +430,6 @@ class MultipartParser:
         previous_newline = b""
 
         for line, newline in lines:
-
-            if self.expected_part_size is not None:
-                self.current_part_size += len(line)
-                if self.current_part_size > self.expected_part_size:
-                    raise MultipartError("Size of body exceeds Content-Length header.")
 
             # Handle the case where our last chunk of data ended
             # ambigiously.
@@ -458,10 +457,16 @@ class MultipartParser:
                     # of "--terminator", we can't make a hard decision when our body chunk
                     # is "somedata\r\n--term". We need to hold off on taking any specific
                     # action, instead requesting more data.
+                    # We only make a distinction here when there is a possibility
+                    # that the chunk could actually be a separator or terminator,
+                    # which is when the line is shorter than the sep / term.
+                    # Anything else would either pass/fail the sep/term check, or
+                    # could not be a sep/term.
                     if len(line) < self.separator_len:
                         self.last_partial_line = line
                         self.state = States.BUILDING_BODY_NEED_DATA
                 else:
+                    self._regulate_content_length(len(line))
                     part_data_buffer += previous_newline + line
                     previous_newline = newline
 
@@ -492,8 +497,15 @@ class MultipartParser:
         """
         self.buffer += b"".join((l + nl) for l, nl in chunk_lines)
 
+    def _regulate_content_length(self, line_size) -> None:
+        if self.expected_part_size is not None:
+            self.current_part_size += line_size
+            if self.current_part_size > self.expected_part_size:
+                raise MultipartError("Size of part body exceeds part Content-Length.")
+
 
 # utils
+
 
 # TODO add data type assignments to parts
 def assign_data_type(part: Part) -> None:
