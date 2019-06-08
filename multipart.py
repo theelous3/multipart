@@ -262,6 +262,13 @@ class MultipartParser:
             else:
                 return Events.FINISHED
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, tb):
+        if self.state is not States.FINISHED:
+            raise MultipartError("Unexpected end. No terminator line parsed.")
+
     def __iter__(self) -> Generator[Union[Part, PartData, Events], None, None]:
         """
         Yield all events in the queue.
