@@ -14,7 +14,7 @@ setup(
     author=__author__,
     author_email="marc@gsites.de",
     url="http://github.com/defnull/multipart",
-    py_modules=["multipart"],
+    packages=["multipart"],
     license=__license__,
     platforms="any",
     classifiers=[

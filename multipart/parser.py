@@ -1,164 +1,22 @@
-# -*- coding: utf-8 -*-
-"""
-Parser for multipart/form-data
-==============================
-
-This module provides a parser for the multipart/form-data format. It can read
-from a file, a socket or a WSGI environment. The parser can be used to replace
-cgi.FieldStorage (without the bugs) and works with Python 2.5+ and 3.x (2to3).
-"""
-
-__author__ = "Marcel Hellkamp, Mark Jameson"
-__version__ = "0.2"
-__license__ = "MIT"
 __all__ = [
-    "MultipartError",
     "MultipartParser",
     "Part",
     "PartData",
     "Events",
-    "parse_form_data",
 ]
 
 
-import re
-import sys
+from dataclasses import dataclass
 from itertools import chain
 from enum import Enum, auto
-from dataclasses import dataclass
 from collections import deque
-from collections import MutableMapping as DictMixin
-from urllib.parse import parse_qs
+
 from wsgiref.headers import Headers
 
 from typing import Union, Generator, List, Tuple
 
-##############################################################################
-################################ Helper & Misc ###############################
-##############################################################################
-# Some of these were copied from bottle: http://bottle.paws.de/
-
-
-# ---------
-# MultiDict
-# ---------
-
-
-class MultiDict(DictMixin):
-    """ A dict that remembers old values for each key.
-        HTTP headers may repeat with differing values,
-        such as Set-Cookie. We need to remember all
-        values.
-    """
-
-    def __init__(self, *args, **kwargs):
-        self.dict = dict()
-        for k, v in dict(*args, **kwargs).items():
-            self[k] = v
-
-    def __len__(self):
-        return len(self.dict)
-
-    def __iter__(self):
-        return iter(self.dict)
-
-    def __contains__(self, key):
-        return key in self.dict
-
-    def __delitem__(self, key):
-        del self.dict[key]
-
-    def keys(self):
-        return self.dict.keys()
-
-    def __getitem__(self, key):
-        return self.get(key, KeyError, -1)
-
-    def __setitem__(self, key, value):
-        self.append(key, value)
-
-    def append(self, key, value):
-        self.dict.setdefault(key, []).append(value)
-
-    def replace(self, key, value):
-        self.dict[key] = [value]
-
-    def getall(self, key):
-        return self.dict.get(key) or []
-
-    def get(self, key, default=None, index=-1):
-        if key not in self.dict and default != KeyError:
-            return [default][index]
-
-        return self.dict[key][index]
-
-    def iterallitems(self):
-        for key, values in self.dict.items():
-            for value in values:
-                yield key, value
-
-
-def to_bytes(data, encoding="utf8"):
-    if isinstance(data, str):
-        data = data.encode(encoding)
-
-    return data
-
-
-# -------------
-# Header Parser
-# -------------
-
-
-_special = re.escape('()<>@,;:"\\/[]?={} \t')
-_re_special = re.compile(r"[%s]" % _special)
-_quoted_string = r'"(?:\\.|[^"])*"'  # Quoted string
-_value = r"(?:[^%s]+|%s)" % (_special, _quoted_string)  # Save or quoted string
-_option = r"(?:;|^)\s*([^%s]+)\s*=\s*(%s)" % (_special, _value)
-_re_option = re.compile(_option)  # key=value part of an Content-Type like header
-
-
-def header_quote(val):
-    if not _re_special.search(val):
-        return val
-
-    return '"' + val.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
-def header_unquote(val, filename=False):
-    if val[0] == val[-1] == '"':
-        val = val[1:-1]
-
-        if val[1:3] == ":\\" or val[:2] == "\\\\":
-            val = val.split("\\")[-1]  # fix ie6 bug: full path --> filename
-
-        return val.replace("\\\\", "\\").replace('\\"', '"')
-
-    return val
-
-
-def parse_options_header(header, options=None):
-    if ";" not in header:
-        return header.lower().strip(), {}
-
-    content_type, tail = header.split(";", 1)
-    options = options or {}
-
-    for match in _re_option.finditer(tail):
-        key = match.group(1).lower()
-        value = header_unquote(match.group(2), key == "filename")
-        options[key] = value
-
-    return content_type, options
-
-
-##############################################################################
-################################## Multipart #################################
-##############################################################################
-
-
-class MultipartError(ValueError):
-    pass
+from .utils import to_bytes, parse_options_header
+from .errors import UnexpectedExit, MalformedData
 
 
 class Events(Enum):
@@ -195,10 +53,6 @@ class Part:
         self.content_type = None
         self.charset = charset
 
-    def is_buffered(self) -> bool:
-        """ Return true if the data is fully buffered in memory."""
-        return isinstance(self.data, BytesIO)
-
     @property
     def value(self) -> str:
         """ Data decoded with the specified charset """
@@ -212,10 +66,6 @@ class Part:
 
 class MultipartParser:
     def __init__(self, boundary, content_length=None, charset="latin1"):
-        """
-        Parse a multipart/form-data byte stream. This object is an iterator
-        over the parts of the message.
-        """
         self.boundary = boundary
         self.separator = b"--" + to_bytes(self.boundary)
         self.terminator = b"--" + to_bytes(self.boundary) + b"--"
@@ -267,7 +117,7 @@ class MultipartParser:
 
     def __exit__(self, exc_type, exc_value, tb):
         if self.state is not States.FINISHED:
-            raise MultipartError("Unexpected end. No terminator line parsed.")
+            raise UnexpectedExit("Unexpected end. No terminator line parsed.")
 
     def __iter__(self) -> Generator[Union[Part, PartData, Events], None, None]:
         """
@@ -358,7 +208,7 @@ class MultipartParser:
 
         if maybe_seperator != self.separator:
             if len(maybe_seperator) >= self.separator_len:
-                raise MultipartError("Part does not start with boundary")
+                raise MalformedData("Part does not start with boundary")
 
         # Buffer the beginning of the part in case we need to reattempt
         # creation later (incomplete data).
@@ -381,7 +231,6 @@ class MultipartParser:
                 self.buffer = bytearray()
                 self._buffer_chunk(lines)
                 return part
-                break
         else:
             # We have iterated the given data to completion, but have not
             # recieved enough data to build the Part.
@@ -404,7 +253,7 @@ class MultipartParser:
             content_type = part.headers.get("Content-Type", "")
 
             if not content_disposition:
-                raise MultipartError("Content-Disposition header is missing.")
+                raise MalformedData("Content-Disposition header is missing.")
 
             part.disposition, part.options = parse_options_header(content_disposition)
             part.name = part.options.get("name")
@@ -421,7 +270,7 @@ class MultipartParser:
             return
 
         if ":" not in line:
-            raise MultipartError("Syntax error in header: No colon.")
+            raise MalformedData("Syntax error in header: No colon.")
 
         name, value = line.split(":", 1)
         part.headerlist.append((name.strip(), value.strip()))
@@ -508,90 +357,4 @@ class MultipartParser:
         if self.expected_part_size is not None:
             self.current_part_size += line_size
             if self.current_part_size > self.expected_part_size:
-                raise MultipartError("Size of part body exceeds part Content-Length.")
-
-
-# utils
-
-
-# TODO add data type assignments to parts
-def assign_data_type(part: Part) -> None:
-    if part.filename is not None:
-        part.file = True
-    else:
-        part.form_data = True
-
-
-##############################################################################
-#################################### WSGI ####################################
-##############################################################################
-
-
-def parse_form_data(environ, charset="utf8", strict=False, **kwargs):
-    """ Parse form data from an environ dict and return a (forms, files) tuple.
-        Both tuple values are dictionaries with the form-field name as a key
-        (unicode) and lists as values (multiple values per key are possible).
-        The forms-dictionary contains form-field values as unicode strings.
-        The files-dictionary contains :class:`Part` instances, either
-        because the form-field was a file-upload or the value is too big to fit
-        into memory limits.
-
-        :param environ: An WSGI environment dict.
-        :param charset: The charset to use if unsure. (default: utf8)
-        :param strict: If True, raise :exc:`MultipartError` on any parsing
-                       errors. These are silently ignored by default.
-    """
-
-    forms, files = MultiDict(), MultiDict()
-
-    try:
-        if environ.get("REQUEST_METHOD", "GET").upper() not in ("POST", "PUT"):
-            raise MultipartError("Request method other than POST or PUT.")
-        content_length = int(environ.get("CONTENT_LENGTH", "-1"))
-        content_type = environ.get("CONTENT_TYPE", "")
-
-        if not content_type:
-            raise MultipartError("Missing Content-Type header.")
-
-        content_type, options = parse_options_header(content_type)
-        stream = environ.get("wsgi.input") or BytesIO()
-        kwargs["charset"] = charset = options.get("charset", charset)
-
-        if content_type == "multipart/form-data":
-            boundary = options.get("boundary", "")
-
-            if not boundary:
-                raise MultipartError("No boundary for multipart/form-data.")
-
-            for part in MultipartParser(stream, boundary, content_length, **kwargs):
-                if part.filename or not part.is_buffered():
-                    files[part.name] = part
-                else:  # TODO: Big form-fields are in the files dict. really?
-                    forms[part.name] = part.value
-
-        elif content_type in (
-            "application/x-www-form-urlencoded",
-            "application/x-url-encoded",
-        ):
-            mem_limit = kwargs.get("mem_limit", 2 ** 20)
-            if content_length > mem_limit:
-                raise MultipartError("Request too big. Increase MAXMEM.")
-
-            data = stream.read(mem_limit).decode(charset)
-
-            if stream.read(1):  # These is more that does not fit mem_limit
-                raise MultipartError("Request too big. Increase MAXMEM.")
-
-            data = parse_qs(data, keep_blank_values=True)
-
-            for key, values in data.items():
-                for value in values:
-                    forms[key] = value
-        else:
-            raise MultipartError("Unsupported content type.")
-
-    except MultipartError:
-        if strict:
-            raise
-
-    return forms, files
+                raise MalformedData("Size of part body exceeds part Content-Length.")
