@@ -166,16 +166,19 @@ class MultipartParser:
 
                 # queue events based on parser state post parse attempt
                 if self.state is States.BUILDING_HEADERS_NEED_DATA:
+                    print("breaking on", self.state)
                     self.events_queue.append(Events.NEED_DATA)
                     self.state = States.BUILDING_HEADERS
                     break
 
                 elif self.state is States.BUILDING_BODY_NEED_DATA:
+                    print("breaking on", self.state)
                     self.events_queue.append(Events.NEED_DATA)
                     self.state = States.BUILDING_BODY
                     break
 
                 elif self.state is States.FINISHED:
+                    print("breaking on", self.state)
                     self.events_queue.append(Events.FINISHED)
                     break
             except Exception:
@@ -195,6 +198,8 @@ class MultipartParser:
         maybe_seperator, first_newline = next(
             ((l, nl) for l, nl in lines if l), (b"", b"")
         )
+
+        print("CONSUMING", maybe_seperator, first_newline)
 
         if not first_newline:
             # We have not recieved a full line of headers.
@@ -282,7 +287,7 @@ class MultipartParser:
         previous_newline = b""
 
         for line, newline in lines:
-
+            print("body parsing:", line, newline)
             # Handle the case where our last chunk of data ended
             # ambigiously.
             if self.last_partial_line is not None:
@@ -296,6 +301,8 @@ class MultipartParser:
                 break
 
             elif line == self.separator:
+                print("HIT SEPERATOR", line)
+                self._buffer_chunk([(line, newline)])
                 self._buffer_chunk(lines)
                 self.state = States.BUILDING_HEADERS
                 self.current_part_size = 0
@@ -323,7 +330,9 @@ class MultipartParser:
                     previous_newline = newline
 
         if part_data_buffer:
-            self.state = States.BUILDING_BODY_NEED_DATA
+            if not self.state in (States.BUILDING_HEADERS, States.FINISHED):
+                # we haven't hit an end condition for the current part.
+                self.state = States.BUILDING_BODY_NEED_DATA
             return PartData(raw=part_data_buffer, length=len(part_data_buffer))
 
     def _separate_newlines(self, lines) -> Generator[Tuple[bytes, bytes], None, None]:
