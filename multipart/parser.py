@@ -31,7 +31,7 @@ class States(Enum):
 @dataclass
 class PartData:
     raw: bytearray
-    length: int
+    size: int
 
 
 class Part:
@@ -58,6 +58,7 @@ class Part:
 
     def buffer(self, part_data) -> None:
         self.data += part_data.raw
+        self.size += part_data.size
 
 
 class MultipartParser:
@@ -333,7 +334,7 @@ class MultipartParser:
             if not self.state in (States.BUILDING_HEADERS, States.FINISHED):
                 # we haven't hit an end condition for the current part.
                 self.state = States.BUILDING_BODY_NEED_DATA
-            return PartData(raw=part_data_buffer, length=len(part_data_buffer))
+            return PartData(raw=part_data_buffer, size=len(part_data_buffer))
 
     def _separate_newlines(self, lines) -> Generator[Tuple[bytes, bytes], None, None]:
         """
