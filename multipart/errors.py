@@ -2,7 +2,7 @@ class MultipartError(Exception):
     ...
 
 
-class UnexpectedExit(MultipartError):
+class UnexpectedExit(MultipartError, EOFError):
     ...
 
 
