@@ -167,19 +167,16 @@ class MultipartParser:
 
                 # queue events based on parser state post parse attempt
                 if self.state is States.BUILDING_HEADERS_NEED_DATA:
-                    print("breaking on", self.state)
                     self.events_queue.append(Events.NEED_DATA)
                     self.state = States.BUILDING_HEADERS
                     break
 
                 elif self.state is States.BUILDING_BODY_NEED_DATA:
-                    print("breaking on", self.state)
                     self.events_queue.append(Events.NEED_DATA)
                     self.state = States.BUILDING_BODY
                     break
 
                 elif self.state is States.FINISHED:
-                    print("breaking on", self.state)
                     self.events_queue.append(Events.FINISHED)
                     break
             except Exception:
@@ -200,7 +197,6 @@ class MultipartParser:
             ((l, nl) for l, nl in lines if l), (b"", b"")
         )
 
-        print("CONSUMING", maybe_seperator, first_newline)
 
         if not first_newline:
             # We have not recieved a full line of headers.
@@ -288,7 +284,6 @@ class MultipartParser:
         previous_newline = b""
 
         for line, newline in lines:
-            print("body parsing:", line, newline)
             # Handle the case where our last chunk of data ended
             # ambigiously.
             if self.last_partial_line is not None:
@@ -302,7 +297,6 @@ class MultipartParser:
                 break
 
             elif line == self.separator:
-                print("HIT SEPERATOR", line)
                 self._buffer_chunk([(line, newline)])
                 self._buffer_chunk(lines)
                 self.state = States.BUILDING_HEADERS
