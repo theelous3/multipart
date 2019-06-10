@@ -1,4 +1,10 @@
-__all__ = ["header_quote", "header_unquote", "parse_options_header", "to_bytes", "MultiDict"]
+__all__ = [
+    "header_quote",
+    "header_unquote",
+    "parse_options_header",
+    "to_bytes",
+    "MultiDict",
+]
 
 
 import re

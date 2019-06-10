@@ -1,9 +1,4 @@
-__all__ = [
-    "MultipartParser",
-    "Part",
-    "PartData",
-    "Events",
-]
+__all__ = ["MultipartParser", "Part", "PartData", "Events"]
 
 
 from dataclasses import dataclass
@@ -274,7 +269,6 @@ class MultipartParser:
 
         name, value = line.split(":", 1)
         part.headerlist.append((name.strip(), value.strip()))
-
 
     def _build_part_data(self, chunk_lines) -> Union[PartData, None]:
         """
