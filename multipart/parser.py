@@ -38,7 +38,7 @@ class Part:
     def __init__(self, charset="latin1"):
         self.headerlist = []
         self.headers = None
-        self.data = None
+        self.data = bytearray()
         self.size = 0
         self.disposition = None
         self.name = None
@@ -49,12 +49,15 @@ class Part:
     @property
     def value(self) -> str:
         """ Data decoded with the specified charset """
-        return self.raw.decode(self.charset)
+        return self.data.decode(self.charset)
 
     @property
     def raw(self) -> bytearray:
         """ Data without decoding """
         return self.data
+
+    def buffer(self, part_data) -> None:
+        self.data += part_data.raw
 
 
 class MultipartParser:
@@ -257,8 +260,6 @@ class MultipartParser:
             content_length = part.headers.get("Content-Length")
             if content_length is not None:
                 self.expected_part_size = int(content_length)
-
-            self.assign_content_type(part)
 
             self.current_part = None
             self.state = States.BUILDING_BODY
