@@ -44,8 +44,6 @@ class Part:
         self.headerlist = []
         self.headers = None
         self.data = None
-        self.file = False
-        self.form_data = False
         self.size = 0
         self.disposition = None
         self.name = None
@@ -265,6 +263,8 @@ class MultipartParser:
             if content_length is not None:
                 self.expected_part_size = int(content_length)
 
+            self.assign_content_type(part)
+
             self.current_part = None
             self.state = States.BUILDING_BODY
             return
@@ -274,6 +274,7 @@ class MultipartParser:
 
         name, value = line.split(":", 1)
         part.headerlist.append((name.strip(), value.strip()))
+
 
     def _build_part_data(self, chunk_lines) -> Union[PartData, None]:
         """
