@@ -14,7 +14,9 @@ Examples
 
 Here's the setup for our examples.
 
-Note: Our multipart body is split up in to *many* pieces. Only on the fourth chunk can we actually produce a ``Part`` object. This is just to illustrate a worst case scenario stream :D ::
+Note: Our multipart body is split up in to *many* pieces. Only on the fourth chunk can we actually produce a ``Part`` object. This is just to illustrate a worst case scenario stream :D
+
+.. code:: python
 
     from multipart import MultipartParser, NEED_DATA
     from collections import deque
@@ -41,7 +43,9 @@ Note: Our multipart body is split up in to *many* pieces. Only on the fourth chu
 
 There are a couple of ways to interact with the parser. Likely the most familiar way is to request events one by one. We'll pretend our deque is a socket, for illustrative purposes.
 
-You'll be familiar with this pattern if you've used other sansio python libs, like h11. ::
+You'll be familiar with this pattern if you've used other sansio python libs, like h11.
+
+.. code:: python
 
     with MultipartParser(boundary) as parser:
         while len(chunks):
@@ -57,7 +61,9 @@ You'll be familiar with this pattern if you've used other sansio python libs, li
     # PartData(raw=bytearray(b'Compooper'), size=9)
 
 
-That isn't the only way to handle things. The following is probably the simplest way to interact with a similar stream. Enter the parser, throw data at it, and read events. ::
+That isn't the only way to handle things. The following is probably the simplest way to interact with a similar stream. Enter the parser, throw data at it, and read events.
+
+.. code:: python
 
     with MultipartParser(boundary) as parser:
         for chunk in chunks:
@@ -75,7 +81,9 @@ That isn't the only way to handle things. The following is probably the simplest
     # Chunk events: -> [<Events.FINISHED: 2>]
     """
 
-Of course, you can just feed the entirity in. This time we'll have the full body data available, and two parts in our multipart (because it's multipart!). ::
+Of course, you can just feed the entirity in. This time we'll have the full body data available, and two parts in our multipart (because it's multipart!).
+
+.. code:: python
 
     full_data = b'--8banana133744910kmmr13a56!102!1823\r\nContent-Disposition: form-data; name="file_1"; filename="test_file1.txt"; Content-Type: application/octet-stream\r\n\r\nCompooper\r\n--8banana133744910kmmr13a56!102!1823\r\nContent-Disposition: form-data; name="data_1"\r\n\r\nwatwatwatwat=yesyesyes\r\n--8banana133744910kmmr13a56!102!1823--\r\n'
 
