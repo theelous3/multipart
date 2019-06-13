@@ -4,7 +4,7 @@ import sys
 import os.path
 from setuptools import setup
 
-from multipart import __version__, __author__, __license__, __doc__
+from multipart import __version__, __author__, __doc__
 
 setup(
     name="multipart",
@@ -12,10 +12,10 @@ setup(
     description="Parser for multipart/form-data.",
     long_description=__doc__,
     author=__author__,
-    author_email="marc@gsites.de",
+    author_email="theegrandmaster@gmail.com",
     url="http://github.com/defnull/multipart",
     packages=["multipart"],
-    license=__license__,
+    license="MIT",
     platforms="any",
     classifiers=[
         "Development Status :: 4 - Beta",
