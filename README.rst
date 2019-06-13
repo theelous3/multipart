@@ -1,7 +1,7 @@
-A sansio parser for multipart/form-data
-=======================================
+sansio_multipart: A sansio parser for multipart/form-data
+=========================================================
 
-This module provides a parser for the multipart/form-data format. You feed it bytes, and it will feed you events and data objects.
+This lib provides a parser for the multipart/form-data format. You feed it bytes, and it will feed you events and data objects.
 
 Requirements
 ------------
@@ -14,7 +14,7 @@ Examples
 
 Here's the setup for our examples.
 
-Note: Our multipart body is split up in to *many* pieces. Only on the fourth chunk can we actually produce a ``Part`` object. This is just to illustrate a worst case scenario stream :D
+Note: Our multipart body is split up in to *many* pieces, in order to make it as difficult to parse as possible. Only on the fourth chunk can we actually produce a ``Part`` object. This is just to illustrate a worst case scenario stream :D
 
 .. code:: python
 
