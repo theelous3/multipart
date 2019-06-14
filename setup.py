@@ -1,20 +1,18 @@
-#!/usr/bin/env python
-
 import sys
 import os.path
 from setuptools import setup
 
-from multipart import __version__, __author__, __doc__
+from sansio_multipart import __version__, __author__, __doc__
 
 setup(
-    name="multipart",
+    name="sansio_multipart",
     version=__version__,
     description="Parser for multipart/form-data.",
     long_description=__doc__,
     author=__author__,
     author_email="theegrandmaster@gmail.com",
-    url="http://github.com/defnull/multipart",
-    packages=["multipart"],
+    url="https://github.com/theelous3/sansio-multipart-parser",
+    packages=["sansio_multipart"],
     license="MIT",
     platforms="any",
     classifiers=[

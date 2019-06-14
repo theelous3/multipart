@@ -18,7 +18,7 @@ Note: Our multipart body is split up in to *many* pieces, in order to make it as
 
 .. code:: python
 
-    from multipart import MultipartParser, NEED_DATA
+    from sansio_multipart import MultipartParser, NEED_DATA
     from collections import deque
 
     # boundary extracted from request's content-type header
@@ -57,7 +57,7 @@ You'll be familiar with this pattern if you've used other sansio python libs, li
 
     # Outputs
 
-    # <multipart.parser.Part object at 0xb707d84c>
+    # <sansio_multipart.parser.Part object at 0xb707d84c>
     # PartData(raw=bytearray(b'Compooper'), size=9)
 
 
@@ -75,7 +75,7 @@ That isn't the only way to handle things. The following is probably the simplest
     # Chunk events: -> [<Events.NEED_DATA: 1>]
     # Chunk events: -> [<Events.NEED_DATA: 1>]
     # Chunk events: -> [<Events.NEED_DATA: 1>]
-    # Chunk events: -> [<multipart.parser.Part object at 0xb7048a4c>, <Events.NEED_DATA: 1>]
+    # Chunk events: -> [<sansio_multipart.parser.Part object at 0xb7048a4c>, <Events.NEED_DATA: 1>]
     # Chunk events: -> [PartData(raw=bytearray(b'Compooper'), size=9), <Events.NEED_DATA: 1>]
     # Chunk events: -> [<Events.NEED_DATA: 1>]
     # Chunk events: -> [<Events.FINISHED: 2>]
@@ -94,9 +94,9 @@ Of course, you can just feed the entirity in. This time we'll have the full body
 
     # Outputs
     # [
-    #     <multipart.parser.Part object at 0xb707d7ac>,
+    #     <sansio_multipart.parser.Part object at 0xb707d7ac>,
     #     PartData(raw=bytearray(b'Compooper'), size=9),
-    #     <multipart.parser.Part object at 0xb707d7ec>,
+    #     <sansio_multipart.parser.Part object at 0xb707d7ec>,
     #     PartData(raw=bytearray(b'watwatwatwat=yesyesyes'), size=22),
     #     <Events.FINISHED: 2>
     # ]
@@ -135,7 +135,7 @@ Limitations
   * No ``encoded-word`` encoding (RFC 2047).
   * No ``base64`` or ``quoted-printable`` transfer encoding.
 
-* Part headers are expected to be encoded in the charset given to the ``Multipart``/``MultipartParser`` constructor.
+* Part headers are expected to be encoded in the charset given to the ``Part``/``MultipartParser`` constructor.
   [For operability considerations, see RFC 7578, section 5.1.]
 
 
