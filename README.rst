@@ -8,6 +8,11 @@ Requirements
 
 Python 3.x
 
+Installing
+----------
+
+``pip install sansio-multipart``
+
 
 Examples
 --------
